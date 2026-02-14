@@ -1,160 +1,150 @@
 from flask import Flask, request, render_template_string, redirect
+import os
+import base64
 import cv2
 import numpy as np
-import face_recognition
-import base64
-import pickle
-import os
+from deepface import DeepFace
 import time
 
 app = Flask(__name__)
 
-SAVE_PATH = "enrolled_faces.pkl"
+UPLOAD_FOLDER = "faces"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# ================= GLOBAL VARIABLES =================
-enrolled_faces = []
 last_image_b64 = ""
+last_result = "SYSTEM READY"
 detect_mode = False
-last_result = "READY"
-result_timestamp = 0
 
-# ================= LOAD SAVED FACES =================
-if os.path.exists(SAVE_PATH):
-    with open(SAVE_PATH, 'rb') as f:
-        enrolled_faces = pickle.load(f)
-    print(f"Loaded {len(enrolled_faces)} faces")
-else:
-    print("No saved faces found. Starting fresh.")
 
-# ================= UI =================
-HTML_PAGE = '''
+# ========================= HTML TEMPLATE =========================
+HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Smart Facial Door</title>
-    <meta http-equiv="refresh" content="2">
-    <style>
-        body { background:#0f172a; font-family:Arial; color:white; text-align:center; }
-        .container { width:80%; margin:auto; margin-top:30px; padding:20px; background:#1e293b; border-radius:15px; }
-        .status { padding:15px; border-radius:10px; font-size:20px; margin:15px 0; }
-        .authorized { background:#16a34a; }
-        .unauthorized { background:#dc2626; }
-        .ready { background:#facc15; color:black; }
-        button { padding:12px 25px; font-size:16px; border:none; border-radius:8px; margin:10px; cursor:pointer; }
-        .btn-detect { background:#3b82f6; color:white; }
-        .btn-enroll { background:#9333ea; color:white; }
-        img { width:60%; border-radius:12px; border:4px solid #3b82f6; margin-top:15px; }
-    </style>
+<title>SMART FACIAL DOOR SYSTEM</title>
+<style>
+body { background:#0f1c2e; color:white; text-align:center; font-family:Arial; }
+.container { margin-top:40px; }
+img { width:320px; border-radius:10px; border:3px solid #4da3ff; }
+.status { margin:20px; padding:15px; border-radius:10px; font-weight:bold; }
+.ready { background:#f1c40f; color:black; }
+.granted { background:#2ecc71; }
+.denied { background:#e74c3c; }
+button { padding:12px 25px; margin:10px; font-size:16px; border:none; border-radius:8px; cursor:pointer; }
+.start { background:#3498db; color:white; }
+.enroll { background:#8e44ad; color:white; }
+</style>
 </head>
 <body>
-<div class="container">
 <h1>SMART FACIAL DOOR SYSTEM</h1>
 
-{% if img %}
-<img src="data:image/jpeg;base64,{{ img }}">
-{% else %}
-<p>Waiting for camera...</p>
-{% endif %}
+<div class="container">
+    {% if image %}
+        <img src="data:image/jpeg;base64,{{ image }}">
+    {% endif %}
 
-{% if result == "AUTHORIZED" %}
-<div class="status authorized">ACCESS GRANTED</div>
-{% elif result == "UNAUTHORIZED" %}
-<div class="status unauthorized">ACCESS DENIED</div>
-{% else %}
-<div class="status ready">SYSTEM READY</div>
-{% endif %}
+    <div class="status {{ status_class }}">
+        {{ result }}
+    </div>
 
-<p>Enrolled Faces: {{ count }}</p>
+    <form action="/start" method="post">
+        <button class="start">START DETECTION</button>
+    </form>
 
-<form action="/start_detect" method="post">
-<button class="btn-detect">START DETECTION</button>
-</form>
+    <form action="/enroll" method="post">
+        <button class="enroll">ENROLL FACE</button>
+    </form>
 
-<form action="/enroll" method="post">
-<button class="btn-enroll">ENROLL FACE</button>
-</form>
-
+    <p>Enrolled Faces: {{ count }}</p>
 </div>
 </body>
 </html>
-'''
+"""
 
-@app.route("/view")
-def view():
-    global last_result, result_timestamp
 
-    if last_result in ["AUTHORIZED", "UNAUTHORIZED"]:
-        if time.time() - result_timestamp > 3:
-            last_result = "READY"
+# ========================= HOME =========================
+@app.route("/")
+def home():
+    status_class = "ready"
+    if last_result == "ACCESS GRANTED":
+        status_class = "granted"
+    elif last_result == "ACCESS DENIED":
+        status_class = "denied"
 
     return render_template_string(
         HTML_PAGE,
-        img=last_image_b64,
+        image=last_image_b64,
         result=last_result,
-        count=len(enrolled_faces)
+        count=len(os.listdir(UPLOAD_FOLDER)),
+        status_class=status_class
     )
 
-@app.route("/start_detect", methods=["POST"])
-def start_detect():
+
+# ========================= START DETECTION =========================
+@app.route("/start", methods=["POST"])
+def start():
     global detect_mode
     detect_mode = True
-    return redirect("/view")
+    return redirect("/")
 
+
+# ========================= ENROLL =========================
 @app.route("/enroll", methods=["POST"])
 def enroll():
-    global last_image_b64
+    global last_result
+    last_result = "SHOW YOUR FACE TO CAMERA"
 
-    if not last_image_b64:
-        return redirect("/view")
+    cap = cv2.VideoCapture(0)
+    ret, frame = cap.read()
+    cap.release()
 
-    img_bytes = base64.b64decode(last_image_b64)
-    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    if ret:
+        filename = f"{UPLOAD_FOLDER}/face_{int(time.time())}.jpg"
+        cv2.imwrite(filename, frame)
+        last_result = "FACE ENROLLED"
 
-    encodings = face_recognition.face_encodings(rgb)
+    return redirect("/")
 
-    if len(encodings) > 0:
-        enrolled_faces.append(encodings[0])
-        with open(SAVE_PATH, 'wb') as f:
-            pickle.dump(enrolled_faces, f)
 
-    return redirect("/view")
-
-@app.route("/recognize", methods=["POST"])
-def recognize():
-    global last_image_b64, detect_mode, last_result, result_timestamp
-
-    file = request.files["image"].read()
-    last_image_b64 = base64.b64encode(file).decode("utf-8")
+# ========================= DETECT =========================
+@app.route("/detect", methods=["POST"])
+def detect():
+    global last_image_b64, last_result, detect_mode
 
     if not detect_mode:
-        return "IDLE", 200
+        return "IDLE"
 
-    if not enrolled_faces:
-        detect_mode = False
-        return "NO FACES ENROLLED", 400
+    cap = cv2.VideoCapture(0)
+    ret, frame = cap.read()
+    cap.release()
 
-    img = cv2.imdecode(np.frombuffer(file, np.uint8), cv2.IMREAD_COLOR)
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    small = cv2.resize(rgb, (0,0), fx=0.5, fy=0.5)
+    if not ret:
+        return "NO CAMERA"
 
-    locations = face_recognition.face_locations(small)
-    encodings = face_recognition.face_encodings(small, locations)
+    # Convert image for web display
+    _, buffer = cv2.imencode('.jpg', frame)
+    last_image_b64 = base64.b64encode(buffer).decode()
 
-    detect_mode = False
+    try:
+        result = DeepFace.find(
+            img_path=frame,
+            db_path=UPLOAD_FOLDER,
+            enforce_detection=False
+        )
 
-    if len(encodings) > 0:
-        distances = face_recognition.face_distance(enrolled_faces, encodings[0])
-        best_match = np.argmin(distances)
+        if len(result[0]) > 0:
+            last_result = "ACCESS GRANTED"
+            detect_mode = False
+            return "UNLOCK"
+        else:
+            last_result = "ACCESS DENIED"
 
-        if distances[best_match] < 0.4:
-            last_result = "AUTHORIZED"
-            result_timestamp = time.time()
-            return "MATCH FOUND", 200
+    except:
+        last_result = "ACCESS DENIED"
 
-    last_result = "UNAUTHORIZED"
-    result_timestamp = time.time()
-    return "UNKNOWN", 401
+    return "NO MATCH"
 
+
+# ========================= RUN =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
