@@ -1,7 +1,7 @@
 Flask
 gunicorn
-deepface
 opencv-python-headless
+face_recognition
 numpy
-pillow
+Pillow
 
