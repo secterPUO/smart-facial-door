@@ -1,7 +1,7 @@
-flask
+Flask
 gunicorn
+deepface
 opencv-python-headless
 numpy
-deepface
-Pillow
+pillow
 
